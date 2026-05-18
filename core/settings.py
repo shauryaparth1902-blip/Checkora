@@ -135,7 +135,7 @@ STATIC_ROOT = BASE_DIR / "staticfiles"
 SESSION_ENGINE = 'django.contrib.sessions.backends.signed_cookies'
 
 # Email Configuration for OTP
-EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
 EMAIL_HOST = 'smtp.gmail.com'
 EMAIL_PORT = 587
 EMAIL_USE_TLS = True

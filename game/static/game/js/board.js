@@ -457,8 +457,8 @@
             function updatePlayerNames(data) {
                 let wName = data.white_name || 'White';
                 let bName = data.black_name || 'Black';
-                currentWhiteName = data.white_name || 'White';
-                currentBlackName = data.black_name || 'Black';
+                currentWhiteName = data.white_name || currentWhiteName || 'White';
+                currentBlackName = data.black_name || currentBlackName || 'Black';
                 
                 if (gameMode === 'ai'){
                     const diffLabel = (currentDifficulty || 'medium').toUpperCase();
@@ -1464,12 +1464,15 @@
                     confettiContainer.remove();
                 }
 
-                const wName = overrideNames
-                    ? overrideNames.white
-                    : (document.getElementById('whiteNameInput')?.value || 'White').trim().slice(0, 17);
-                const bName = overrideNames
-                    ? overrideNames.black
-                    : (document.getElementById('blackNameInput')?.value || 'Black').trim().slice(0, 17);
+                const normalizeName = (name, fallback) => (name || fallback).trim().slice(0, 17);
+                const wName = normalizeName(
+                    overrideNames ? overrideNames.white : document.getElementById('whiteNameInput')?.value,
+                    'White'
+                );
+                const bName = normalizeName(
+                    overrideNames ? overrideNames.black : document.getElementById('blackNameInput')?.value,
+                    'Black'
+                );
                 const defaultTimeLimitMins = parseInt(document.getElementById('timeLimitInput')?.value || 10, 10);
                 const timeLimit = (timeLimitMins !== null ? timeLimitMins : defaultTimeLimitMins) * 60;
 

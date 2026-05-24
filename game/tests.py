@@ -7,10 +7,16 @@ from unittest import mock
 
 from django.conf import settings
 from django.contrib.auth.models import User
-from django.test import SimpleTestCase, TestCase, override_settings
+from django.urls import reverse
+from django.test import (
+    RequestFactory,
+    SimpleTestCase,
+    TestCase,
+    override_settings,
+)
 
 from .engine import ChessGame
-
+from .forms import CustomSetPasswordForm
 
 class EnginePathResolutionTest(SimpleTestCase):
     """Engine path selection should work across local platforms."""
@@ -68,7 +74,6 @@ class EnginePathResolutionTest(SimpleTestCase):
                 [sys.executable, candidates[2]],
             )
 
-
 class BoardViewTest(TestCase):
     """The board page should load and initialise a session."""
 
@@ -76,7 +81,6 @@ class BoardViewTest(TestCase):
         response = self.client.get('/play/')
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'Checkora')
-
 
 class LandingViewTest(TestCase):
     """The landing page at / should load and link to the game."""
@@ -91,13 +95,50 @@ class LandingViewTest(TestCase):
         self.assertContains(response, '/play/')
 
 
+class NotFoundPageTest(TestCase):
+    """Custom 404 page should match the product theme and navigation flow."""
+
+    @override_settings(DEBUG=False, SECURE_SSL_REDIRECT=False)
+    def test_unknown_url_renders_themed_404_page(self):
+        response = self.client.get('/this-route-does-not-exist/')
+        self.assertEqual(response.status_code, 404)
+        self.assertContains(response, 'This move is illegal!', status_code=404)
+        self.assertContains(response, 'Return to Main Menu', status_code=404)
+        self.assertContains(response, reverse('landing'), status_code=404)
+
+
+class ServerErrorPageTest(SimpleTestCase):
+    """Custom 500 page should match the product theme and recovery flow."""
+
+    def test_custom_500_handler_renders_themed_page(self):
+        from core.urls import custom_server_error
+
+        request = RequestFactory().get('/server-error/')
+        response = custom_server_error(request)
+
+        self.assertEqual(response.status_code, 500)
+        self.assertContains(
+            response,
+            'The King has fallen!',
+            status_code=500,
+        )
+        self.assertContains(
+            response,
+            'Return to Main Menu',
+            status_code=500,
+        )
+        self.assertContains(response, reverse('landing'), status_code=500)
+
+
 class RegistrationViewTest(TestCase):
-    """Registration should send OTP by email only and show failures."""
+    """Registration should support local OTP fallback and email failures."""
 
     @override_settings(
-        EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend'
+        DEBUG=True,
+        EMAIL_HOST_USER='',
+        EMAIL_HOST_PASSWORD=''
     )
-    def test_successful_registration_redirects_without_showing_otp(self):
+    def test_missing_email_credentials_prints_otp_in_debug(self):
         payload = {
             'username': 'devplayer',
             'email': 'devplayer@example.com',
@@ -105,12 +146,24 @@ class RegistrationViewTest(TestCase):
             'password2': 'StrongPass123!',
         }
 
-        response = self.client.post('/register/', data=payload, follow=True)
+        with mock.patch('builtins.print') as mock_print:
+            response = self.client.post('/register/', data=payload, follow=True)
 
         self.assertRedirects(response, '/verify-otp/')
         self.assertNotContains(response, 'Development mode OTP')
         self.assertTrue(User.objects.filter(username='devplayer').exists())
+        printed_messages = ' '.join(
+            str(arg)
+            for call in mock_print.call_args_list
+            for arg in call.args
+        )
+        self.assertIn('Development registration OTP', printed_messages)
+        self.assertIn('devplayer@example.com', printed_messages)
 
+    @override_settings(
+        EMAIL_HOST_USER='sender@example.com',
+        EMAIL_HOST_PASSWORD='app-password'
+    )
     def test_email_failure_renders_error_and_removes_pending_user(self):
         payload = {
             'username': 'newplayer',
@@ -129,6 +182,55 @@ class RegistrationViewTest(TestCase):
         self.assertNotIn('registration_user_id', self.client.session)
         self.assertNotIn('registration_otp_hash', self.client.session)
 
+
+class CustomSetPasswordFormTest(TestCase):
+    """Password reset form should reject reusing the current password."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username='resetuser',
+            password='StrongPass123!',
+        )
+
+    def test_rejects_reusing_current_password(self):
+        form = CustomSetPasswordForm(
+            self.user,
+            data={
+                'new_password1': 'StrongPass123!',
+                'new_password2': 'StrongPass123!',
+            },
+        )
+
+        self.assertFalse(form.is_valid())
+        self.assertIn('new_password2', form.errors)
+        self.assertIn(
+            'This password has been used before. Please choose a new password.',
+            form.errors['new_password2'],
+        )
+
+    def test_accepts_different_valid_password(self):
+        form = CustomSetPasswordForm(
+            self.user,
+            data={
+                'new_password1': 'NewStrongPass456!',
+                'new_password2': 'NewStrongPass456!',
+            },
+        )
+
+        self.assertTrue(form.is_valid(), form.errors)
+
+    def test_unusable_password_accounts_keep_default_validation_flow(self):
+        self.user.set_unusable_password()
+        self.user.save()
+        form = CustomSetPasswordForm(
+            self.user,
+            data={
+                'new_password1': 'NewStrongPass456!',
+                'new_password2': 'NewStrongPass456!',
+            },
+        )
+
+        self.assertTrue(form.is_valid(), form.errors)
 
 class MoveValidationTest(TestCase):
     """Test move validation wrapper by mocking validate_move."""
@@ -240,7 +342,6 @@ class MoveValidationTest(TestCase):
         self.assertTrue(data['valid'])
         self.assertEqual(data['captured'], 'p')
 
-
 class ValidMovesTest(TestCase):
     """Test /api/valid-moves/ endpoint."""
 
@@ -277,7 +378,6 @@ class ValidMovesTest(TestCase):
         r = self.client.get('/api/valid-moves/?row=7&col=0')
         self.assertEqual(len(r.json()['valid_moves']), 0)
 
-
 class NewGameTest(TestCase):
     """Test the /api/new-game/ endpoint."""
 
@@ -297,7 +397,6 @@ class NewGameTest(TestCase):
         data = r.json()
         self.assertEqual(data['current_turn'], 'white')
         self.assertEqual(len(data['move_history']), 0)
-
 
 class CheckPromotionTest(TestCase):
     """Test the /api/check-promotion/ endpoint."""
@@ -334,7 +433,6 @@ class CheckPromotionTest(TestCase):
         r = self.client.get(url)
         self.assertFalse(r.json()['is_promotion'])
         self.mock_promo.assert_called_once()
-
 
 class GameStateTest(TestCase):
     """Test the /api/state/ endpoint."""
@@ -392,7 +490,6 @@ class GameStateTest(TestCase):
         self.assertEqual(data['white_time'], 600)
         self.assertEqual(data['black_time'], 600)
 
-
 class PauseTest(TestCase):
     """Test the /api/pause/ endpoint."""
 
@@ -445,7 +542,6 @@ class PauseTest(TestCase):
         self.assertEqual(data['white_time'], 597)
         self.assertEqual(data['black_time'], 600)
 
-
 class DrawOfferTest(TestCase):
     """Test draw agreement persistence through the API."""
 
@@ -467,7 +563,6 @@ class DrawOfferTest(TestCase):
         state = self.client.get('/api/state/').json()
         self.assertEqual(state['game_status'], 'draw')
         self.assertEqual(state['draw_reason'], 'agreement')
-
 
 class DrawRuleTest(SimpleTestCase):
     """Test rule-based draw detection in the engine."""
@@ -576,7 +671,6 @@ class DrawRuleTest(SimpleTestCase):
         without_ep = game.generate_position_key()
 
         self.assertEqual(with_ep, without_ep)
-
 
 class AIMoveTest(TestCase):
     """Test the /api/ai-move/ endpoint."""
@@ -848,7 +942,6 @@ class OpeningBookTest(SimpleTestCase):
         self.assertEqual(move['to_row'], 4)
         ChessGame._opening_book = None
 
-
 class MoveHistoryColorTest(TestCase):
     """Test that move_history records the correct player color."""
 
@@ -956,3 +1049,292 @@ class StatsCleanupTest(TestCase):
         response = self.client.get('/stats/')
         self.assertNotContains(response, 'Checkmate')
         self.assertContains(response, 'No games played yet.')
+
+class StaleGameCleanupTest(TestCase):
+    def setUp(self):
+        self.url = '/api/cron/cleanup-stale-games/'
+        self.secret = 'test_secret_123'
+        
+    @override_settings(CRON_SECRET='test_secret_123')
+    def test_stale_game_deletion(self):
+        from django.contrib.sessions.backends.db import SessionStore
+        import time
+        
+        s = SessionStore()
+        s.create()
+        # low engagement: < 5 moves
+        s['game'] = {
+            'game_status': 'active',
+            'move_history': [1, 2, 3],
+            'last_ts': time.time() - (50 * 3600)
+        }
+        s.save()
+        
+        response = self.client.post(self.url, HTTP_AUTHORIZATION=f'Bearer {self.secret}')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['deleted_games'], 1)
+        
+        s = SessionStore(session_key=s.session_key)
+        self.assertNotIn('game', s)
+
+    @override_settings(CRON_SECRET='test_secret_123')
+    def test_stale_game_auto_resignation(self):
+        from django.contrib.sessions.backends.db import SessionStore
+        import time
+        from game.models import GameResult
+        
+        s = SessionStore()
+        s.create()
+        # high engagement: >= 5 moves
+        s['game'] = {
+            'game_status': 'active',
+            'move_history': [1, 2, 3, 4, 5, 6],
+            'current_turn': 'white',
+            'player_color': 'white',
+            'mode': 'pvp',
+            'last_ts': time.time() - (50 * 3600)
+        }
+        s.save()
+        
+        response = self.client.post(self.url, HTTP_AUTHORIZATION=f'Bearer {self.secret}')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['resigned_games'], 1)
+        
+        s = SessionStore(session_key=s.session_key)
+        self.assertEqual(s['game']['game_status'], 'resignation')
+        
+        self.assertEqual(GameResult.objects.count(), 1)
+        res = GameResult.objects.first()
+        self.assertEqual(res.winner, 'black')
+        self.assertEqual(res.end_reason, 'resign')
+
+    @override_settings(CRON_SECRET='test_secret_123')
+    def test_edge_cases(self):
+        from django.contrib.sessions.backends.db import SessionStore
+        import time
+        
+        # 1. Game less than 48 hours old
+        s1 = SessionStore()
+        s1.create()
+        s1['game'] = {'game_status': 'active', 'move_history': [1], 'last_ts': time.time() - (10 * 3600)}
+        s1.save()
+        
+        # 2. Game already completed
+        s2 = SessionStore()
+        s2.create()
+        s2['game'] = {'game_status': 'checkmate', 'move_history': [1, 2, 3, 4, 5], 'last_ts': time.time() - (50 * 3600)}
+        s2.save()
+        
+        # 3. Session without game data
+        s3 = SessionStore()
+        s3.create()
+        s3.save()
+        
+        response = self.client.post(self.url, HTTP_AUTHORIZATION=f'Bearer {self.secret}')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['deleted_games'], 0)
+        self.assertEqual(response.json()['resigned_games'], 0)
+        
+        s1 = SessionStore(session_key=s1.session_key)
+        self.assertEqual(s1['game']['game_status'], 'active')
+
+    @override_settings(CRON_SECRET='test_secret_123')
+    def test_protected_endpoint(self):
+        response = self.client.post(self.url)
+        self.assertEqual(response.status_code, 401)
+        
+        response = self.client.post(self.url, HTTP_AUTHORIZATION='Bearer wrong_secret')
+        self.assertEqual(response.status_code, 401)
+
+class CheckUsernameViewTest(TestCase):
+
+    def setUp(self):
+        """Create a test user to simulate a taken username."""
+        User.objects.create_user(username='existinguser', password='testpass123')
+
+    def test_username_available(self):
+        """Should return available=True for a username that does not exist."""
+        response = self.client.get(reverse('check_username'), {'username': 'newuser'})
+        self.assertEqual(response.status_code, 200)
+        self.assertJSONEqual(response.content, {'available': True})
+
+    def test_username_taken(self):
+        """Should return available=False for a username that already exists."""
+        response = self.client.get(reverse('check_username'), {'username': 'existinguser'})
+        self.assertEqual(response.status_code, 200)
+        self.assertJSONEqual(response.content, {'available': False})
+
+    def test_username_taken_case_insensitive(self):
+        """Should be case insensitive — ExistingUser should match existinguser."""
+        response = self.client.get(reverse('check_username'), {'username': 'ExistingUser'})
+        self.assertEqual(response.status_code, 200)
+        self.assertJSONEqual(response.content, {'available': False})
+
+    def test_missing_username_param(self):
+        """Should return 400 when no username param is provided."""
+        response = self.client.get(reverse('check_username'))
+        self.assertEqual(response.status_code, 400)
+        self.assertJSONEqual(response.content, {
+            'available': False,
+            'error': 'No username provided'
+        })
+
+    def test_empty_username_param(self):
+        """Should return 400 when username param is an empty string."""
+        response = self.client.get(reverse('check_username'), {'username': ''})
+        self.assertEqual(response.status_code, 400)
+        self.assertJSONEqual(response.content, {
+            'available': False,
+            'error': 'No username provided'
+        })
+
+    def test_whitespace_only_username(self):
+        """Should return 400 when username is only whitespace."""
+        response = self.client.get(reverse('check_username'), {'username': '   '})
+        self.assertEqual(response.status_code, 400)
+        self.assertJSONEqual(response.content, {
+            'available': False,
+            'error': 'No username provided'
+        })
+
+    def test_endpoint_only_accepts_get(self):
+        """Should return 405 Method Not Allowed for POST requests."""
+        response = self.client.post(reverse('check_username'), {'username': 'newuser'})
+        self.assertEqual(response.status_code, 405)
+
+class PromotionNotationTest(TestCase):
+    """Test standard algebraic notation (SAN) generation for pawn promotions."""
+
+    def test_promotion_notation_default_queen(self):
+        """A promotion move with no explicit piece choice defaults to Queen promotion (=Q)."""
+        game = ChessGame()
+        notation = game._notation(1, 0, 0, 0, 'P', None, promo_char='q')
+        self.assertEqual(notation, 'a8=Q')
+
+    def test_promotion_notation_knight(self):
+        """A promotion move to a Knight gets `=N` suffix."""
+        game = ChessGame()
+        notation = game._notation(1, 0, 0, 0, 'P', None, promo_char='n')
+        self.assertEqual(notation, 'a8=N')
+
+    def test_promotion_notation_rook(self):
+        """A promotion move to a Rook gets `=R` suffix."""
+        game = ChessGame()
+        notation = game._notation(1, 0, 0, 0, 'P', None, promo_char='r')
+        self.assertEqual(notation, 'a8=R')
+
+    def test_promotion_notation_bishop(self):
+        """A promotion move to a Bishop gets `=B` suffix."""
+        game = ChessGame()
+        notation = game._notation(1, 0, 0, 0, 'P', None, promo_char='b')
+        self.assertEqual(notation, 'a8=B')
+
+    def test_promotion_notation_invalid_piece_defaults_to_queen(self):
+        """An invalid promotion piece input (like 'x') defaults to Queen promotion (=Q)."""
+        game = ChessGame()
+        notation = game._notation(1, 0, 0, 0, 'P', None, promo_char='x')
+        self.assertEqual(notation, 'a8=Q')
+
+
+class InsufficientMaterialDrawTest(TestCase):
+    """Test cases for insufficient material draw detection in Python engine fallback and ChessGame integration."""
+
+    def test_python_engine_insufficient_material_k_vs_k(self):
+        """Python fallback engine should return 'STATUS DRAW' for King vs. King."""
+        # board64 string: K at e1 (index 60), k at e8 (index 4), others '.'
+        board64 = list('.' * 64)
+        board64[4] = 'k'
+        board64[60] = 'K'
+        board64_str = "".join(board64)
+        
+        # STATUS <board64> <castling_rights> <turn> <ep_row> <ep_col>
+        cmd = f"STATUS {board64_str} - white -1 -1\n"
+        
+        game = ChessGame()
+        import os
+        python_engine_path = os.path.join(ChessGame.ENGINE_DIR, 'main.py')
+        
+        with mock.patch.object(game, '_resolve_engine_path', return_value=python_engine_path):
+            resp = game._call_engine(cmd)
+            self.assertEqual(resp, "STATUS DRAW")
+
+    def test_python_engine_insufficient_material_k_n_vs_k(self):
+        """Python fallback engine should return 'STATUS DRAW' for King + Knight vs. King."""
+        # board64: K at e1 (60), N at f3 (45), k at e8 (4)
+        board64 = list('.' * 64)
+        board64[4] = 'k'
+        board64[60] = 'K'
+        board64[45] = 'N'
+        board64_str = "".join(board64)
+        
+        cmd = f"STATUS {board64_str} - white -1 -1\n"
+        game = ChessGame()
+        import os
+        python_engine_path = os.path.join(ChessGame.ENGINE_DIR, 'main.py')
+        
+        with mock.patch.object(game, '_resolve_engine_path', return_value=python_engine_path):
+            resp = game._call_engine(cmd)
+            self.assertEqual(resp, "STATUS DRAW")
+
+    def test_python_engine_insufficient_material_k_b_vs_k(self):
+        """Python fallback engine should return 'STATUS DRAW' for King + Bishop vs. King."""
+        # board64: K at e1 (60), B at f3 (45), k at e8 (4)
+        board64 = list('.' * 64)
+        board64[4] = 'k'
+        board64[60] = 'K'
+        board64[45] = 'B'
+        board64_str = "".join(board64)
+        
+        cmd = f"STATUS {board64_str} - white -1 -1\n"
+        game = ChessGame()
+        import os
+        python_engine_path = os.path.join(ChessGame.ENGINE_DIR, 'main.py')
+        
+        with mock.patch.object(game, '_resolve_engine_path', return_value=python_engine_path):
+            resp = game._call_engine(cmd)
+            self.assertEqual(resp, "STATUS DRAW")
+
+    def test_python_engine_sufficient_material_k_p_vs_k(self):
+        """Python fallback engine should return 'STATUS OK' for King + Pawn vs. King."""
+        # board64: K at e1 (60), P at e2 (52), k at e8 (4)
+        board64 = list('.' * 64)
+        board64[4] = 'k'
+        board64[60] = 'K'
+        board64[52] = 'P'
+        board64_str = "".join(board64)
+        
+        cmd = f"STATUS {board64_str} - white -1 -1\n"
+        game = ChessGame()
+        import os
+        python_engine_path = os.path.join(ChessGame.ENGINE_DIR, 'main.py')
+        
+        with mock.patch.object(game, '_resolve_engine_path', return_value=python_engine_path):
+            resp = game._call_engine(cmd)
+            self.assertEqual(resp, "STATUS OK")
+
+    def test_chess_game_draws_on_insufficient_material(self):
+        """ChessGame should end in a draw with 'insufficient_material' reason under insufficient material conditions."""
+        game = ChessGame()
+        # Clear board except for the Kings
+        game.board = [[None] * 8 for _ in range(8)]
+        game.board[0][4] = 'k'
+        game.board[7][4] = 'K'
+        
+        # Verify the status is 'draw'
+        status = game.check_game_status()
+        self.assertEqual(status, 'draw')
+        
+        # Actually trigger a move to verify game state transitions to 'draw' and 'insufficient_material'
+        with mock.patch.object(game, 'validate_move', return_value=(True, 'ok')):
+            success, notation, captured, final_status = game.make_move(7, 4, 7, 3)
+            self.assertTrue(success)
+            self.assertEqual(final_status, 'draw')
+            self.assertEqual(game.game_status, 'draw')
+            self.assertEqual(game.draw_reason, 'insufficient_material')
+
+    def test_chess_game_draws_on_insufficient_material_cpp_mocked(self):
+        """ChessGame should handle 'STATUS DRAW' from a C++ engine correctly."""
+        game = ChessGame()
+        with mock.patch.object(game, '_call_engine', return_value="STATUS DRAW"):
+            status = game.check_game_status()
+            self.assertEqual(status, 'draw')

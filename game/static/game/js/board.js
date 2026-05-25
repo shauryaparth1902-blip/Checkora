@@ -187,6 +187,7 @@
             const gameOverTitle = document.getElementById('gameOverTitle');
             const gameOverMessage = document.getElementById('gameOverMessage');
             const gameOverStartBtn = document.getElementById('gameOverStartBtn');
+            const gameOverExitBtn = document.getElementById('gameOverExitBtn');
             const gameOverPvPBtn = document.getElementById('gameOverPvPBtn');
             const gameOverAIBtn = document.getElementById('gameOverAIBtn');
 
@@ -2131,17 +2132,23 @@
 
                 const confettiContainer = gameOverOverlay.querySelector('.confetti-container');
                 if (confettiContainer) {
-                    confettiContainer.remove();
+                 confettiContainer.remove();
                 }
 
                 const swappedColor = playerColor === 'white' ? 'black' : 'white';
                 if (mode === 'ai') {
                     showSideSelectionModal(side => startNewGame(mode, side, diff, null, timeLimitMins));
-                } else {
+                }
+               
+                else {
                     startNewGame(mode, swappedColor, diff, null, timeLimitMins,
                         { white: currentBlackName, black: currentWhiteName });
                 }
             };
+           if (gameOverExitBtn) gameOverExitBtn.addEventListener('click', () => {
+    const confettiContainer = gameOverOverlay.querySelector('.confetti-container');
+    if (confettiContainer) confettiContainer.remove();
+});
 
             // Theme Switcher
             function initThemeSwitcher() {
